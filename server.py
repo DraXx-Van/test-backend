@@ -41,8 +41,12 @@ def validate_license():
     license_data = doc.to_dict()
     expire_time = license_data.get("expire_time")
     bound_hwid = license_data.get("hwid")
+    status = license_data.get("status")
 
-    if expire_time and datetime.datetime.utcnow() > expire_time.replace(tzinfo=None):
+    if status != 'active':
+        return jsonify({"status": "error", "message": "License is inactive or paused"}), 403
+
+    if expire_time and datetime.datetime.now(datetime.UTC) > expire_time.replace(tzinfo=datetime.UTC):
         return jsonify({"status": "error", "message": "License expired"}), 403
 
     if not bound_hwid:
@@ -61,11 +65,12 @@ def create_license():
     data = request.get_json()
     days_valid = data.get("days", 30)
     key = data.get("key") or str(uuid.uuid4())[:8]
-    expire_time = datetime.datetime.utcnow() + datetime.timedelta(days=days_valid)
+    expire_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days_valid)
 
     db.collection("licenses").document(key).set({
         "hwid": None,
-        "expire_time": expire_time
+        "expire_time": expire_time,
+        "status": 'active'
     })
 
     return jsonify({"status": "success", "key": key, "expire_time": expire_time.isoformat()})
@@ -88,6 +93,25 @@ def reset_hwid(key):
     doc_ref = db.collection("licenses").document(key)
     doc_ref.update({"hwid": None})
     return jsonify({"status": "success", "message": f"HWID for license {key} reset"}), 200
+    
+# Admin endpoint to toggle key status
+@app.route("/toggle-status/<key>", methods=["POST"])
+def toggle_status(key):
+    if request.headers.get("X-API-KEY") != API_KEY:
+        return jsonify({"status": "error", "message": "Unauthorized"}), 401
+    
+    doc_ref = db.collection("licenses").document(key)
+    doc = doc_ref.get()
+    
+    if not doc.exists:
+        return jsonify({"status": "error", "message": "Invalid key"}), 404
+        
+    license_data = doc.to_dict()
+    new_status = 'paused' if license_data.get('status') == 'active' else 'active'
+    
+    doc_ref.update({"status": new_status})
+    return jsonify({"status": "success", "message": f"License {key} status changed to {new_status}"}), 200
+
 
 # Endpoint to get all licenses (for the website)
 @app.route("/licenses", methods=["GET"])
