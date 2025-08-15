@@ -5,8 +5,10 @@ import uuid
 from flask import Flask, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, firestore
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 # Load Firebase credentials from environment variable
 cred_json = os.environ.get("FIREBASE_CRED_JSON")
@@ -40,11 +42,9 @@ def validate_license():
     expire_time = license_data.get("expire_time")
     bound_hwid = license_data.get("hwid")
 
-    # Check expiration
     if expire_time and datetime.datetime.utcnow() > expire_time.replace(tzinfo=None):
         return jsonify({"status": "error", "message": "License expired"}), 403
 
-    # If hwid not set, bind it
     if not bound_hwid:
         doc_ref.update({"hwid": hwid})
     elif bound_hwid != hwid:
@@ -69,6 +69,35 @@ def create_license():
     })
 
     return jsonify({"status": "success", "key": key, "expire_time": expire_time.isoformat()})
+
+# Admin endpoint to delete a license
+@app.route("/delete/<key>", methods=["POST"])
+def delete_license(key):
+    if request.headers.get("X-API-KEY") != API_KEY:
+        return jsonify({"status": "error", "message": "Unauthorized"}), 401
+    
+    db.collection("licenses").document(key).delete()
+    return jsonify({"status": "success", "message": f"License {key} deleted"}), 200
+
+# Admin endpoint to reset HWID
+@app.route("/reset-hwid/<key>", methods=["POST"])
+def reset_hwid(key):
+    if request.headers.get("X-API-KEY") != API_KEY:
+        return jsonify({"status": "error", "message": "Unauthorized"}), 401
+
+    doc_ref = db.collection("licenses").document(key)
+    doc_ref.update({"hwid": None})
+    return jsonify({"status": "success", "message": f"HWID for license {key} reset"}), 200
+
+# Endpoint to get all licenses (for the website)
+@app.route("/licenses", methods=["GET"])
+def get_all_licenses():
+    licenses_ref = db.collection("licenses")
+    docs = licenses_ref.stream()
+    licenses = []
+    for doc in docs:
+        licenses.append({**doc.to_dict(), "id": doc.id})
+    return jsonify({"licenses": licenses}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
