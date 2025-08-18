@@ -12,25 +12,25 @@ app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 # --- Firebase Initialization ---
-# This path is where Render will place the secret file.
-FIREBASE_CRED_PATH = os.environ.get('FIREBASE_CREDENTIALS_PATH', '/etc/secrets/firebase_credentials')
-
+# Reverted to use the FIREBASE_CRED_JSON environment variable as you have it configured.
 try:
-    # Check if the file exists before trying to use it
-    if not os.path.exists(FIREBASE_CRED_PATH):
-        raise RuntimeError(f"Firebase credentials file not found at: {FIREBASE_CRED_PATH}. Please set up the Secret File in Render.")
+    cred_json_str = os.environ.get("FIREBASE_CRED_JSON")
+    if not cred_json_str:
+        raise RuntimeError("FIREBASE_CRED_JSON environment variable not set or empty.")
     
-    cred = credentials.Certificate(FIREBASE_CRED_PATH)
+    cred_dict = json.loads(cred_json_str)
+    cred = credentials.Certificate(cred_dict)
     firebase_admin.initialize_app(cred)
     db = firestore.client()
-    print("Firebase initialized successfully.")
+    print("Firebase initialized successfully from environment variable.")
 except Exception as e:
     # Log a fatal error if Firebase can't be initialized
     print(f"FATAL: Error initializing Firebase: {e}", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(1) # Exit if the database connection fails
 
-
-API_KEY = os.environ.get("API_KEY", "default_api_key")
+# --- API Key for Admin Actions ---
+# Get the API key from environment variables for security
+API_KEY = os.environ.get("API_KEY", "default_api_key_for_local_testing")
 
 # Endpoint to validate license
 @app.route("/validate", methods=["POST"])
@@ -56,10 +56,12 @@ def validate_license():
     if status != 'active':
         return jsonify({"status": "error", "message": "License is inactive or paused"}), 403
 
+    # Ensure the datetime object from Firestore is timezone-aware for correct comparison
     if expire_time and datetime.datetime.now(datetime.timezone.utc) > expire_time:
         return jsonify({"status": "error", "message": "License expired"}), 403
 
     if not bound_hwid:
+        # First time this key is used, bind the HWID to it
         doc_ref.update({"hwid": hwid})
     elif bound_hwid != hwid:
         return jsonify({"status": "error", "message": "HWID mismatch"}), 403
@@ -73,8 +75,7 @@ def create_license():
         return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
     data = request.get_json()
-    # --- FIX IS HERE ---
-    # Convert the 'days' value from the request to an integer.
+    # FIX: Convert the 'days' value from the request to an integer.
     days_valid = int(data.get("days", 30))
     key = data.get("key") or str(uuid.uuid4())[:8].upper()
     
