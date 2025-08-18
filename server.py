@@ -12,13 +12,17 @@ app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 # --- Firebase Initialization ---
-# Reverted to use the FIREBASE_CRED_JSON environment variable as you have it configured.
+# This version reads the credentials directly from the environment variable.
 try:
+    # Get the JSON string from the environment variable
     cred_json_str = os.environ.get("FIREBASE_CRED_JSON")
     if not cred_json_str:
         raise RuntimeError("FIREBASE_CRED_JSON environment variable not set or empty.")
     
+    # Convert the JSON string into a Python dictionary
     cred_dict = json.loads(cred_json_str)
+    
+    # Initialize the app with the credentials
     cred = credentials.Certificate(cred_dict)
     firebase_admin.initialize_app(cred)
     db = firestore.client()
