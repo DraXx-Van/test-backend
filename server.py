@@ -2,6 +2,7 @@ import os
 import json
 import datetime
 import uuid
+import sys
 from flask import Flask, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -10,15 +11,24 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Load Firebase credentials from environment variable
-cred_json = os.environ.get("FIREBASE_CRED_JSON")
-if not cred_json:
-    raise RuntimeError("FIREBASE_CRED_JSON environment variable not set")
+# --- Firebase Initialization ---
+# This path is where Render will place the secret file.
+FIREBASE_CRED_PATH = os.environ.get('FIREBASE_CREDENTIALS_PATH', '/etc/secrets/firebase_credentials')
 
-cred_dict = json.loads(cred_json)
-cred = credentials.Certificate(cred_dict)
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+try:
+    # Check if the file exists before trying to use it
+    if not os.path.exists(FIREBASE_CRED_PATH):
+        raise RuntimeError(f"Firebase credentials file not found at: {FIREBASE_CRED_PATH}. Please set up the Secret File in Render.")
+    
+    cred = credentials.Certificate(FIREBASE_CRED_PATH)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("Firebase initialized successfully.")
+except Exception as e:
+    # Log a fatal error if Firebase can't be initialized
+    print(f"FATAL: Error initializing Firebase: {e}", file=sys.stderr)
+    sys.exit(1)
+
 
 API_KEY = os.environ.get("API_KEY", "default_api_key")
 
@@ -46,7 +56,7 @@ def validate_license():
     if status != 'active':
         return jsonify({"status": "error", "message": "License is inactive or paused"}), 403
 
-    if expire_time and datetime.datetime.now(datetime.UTC) > expire_time.replace(tzinfo=datetime.UTC):
+    if expire_time and datetime.datetime.now(datetime.timezone.utc) > expire_time:
         return jsonify({"status": "error", "message": "License expired"}), 403
 
     if not bound_hwid:
@@ -63,9 +73,13 @@ def create_license():
         return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
     data = request.get_json()
-    days_valid = data.get("days", 30)
-    key = data.get("key") or str(uuid.uuid4())[:8]
-    expire_time = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days_valid)
+    # --- FIX IS HERE ---
+    # Convert the 'days' value from the request to an integer.
+    days_valid = int(data.get("days", 30))
+    key = data.get("key") or str(uuid.uuid4())[:8].upper()
+    
+    # Use timezone-aware datetime object for consistency
+    expire_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days_valid)
 
     db.collection("licenses").document(key).set({
         "hwid": None,
@@ -120,7 +134,12 @@ def get_all_licenses():
     docs = licenses_ref.stream()
     licenses = []
     for doc in docs:
-        licenses.append({**doc.to_dict(), "id": doc.id})
+        data = doc.to_dict()
+        # Ensure expire_time is converted to a string for JSON serialization
+        if 'expire_time' in data and isinstance(data['expire_time'], datetime.datetime):
+            data['expire_time'] = data['expire_time'].isoformat()
+        data['id'] = doc.id
+        licenses.append(data)
     return jsonify({"licenses": licenses}), 200
 
 if __name__ == "__main__":
